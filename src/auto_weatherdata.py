@@ -138,7 +138,7 @@ else:
 # Setup API Client
 # -----------------------------
 cache_session = requests_cache.CachedSession('.cache', expire_after=-1)
-retry_session = retry(cache_session, retries=10, backoff_factor=0.5)
+retry_session = retry(cache_session, retries=5, backoff_factor=0.2)
 openmeteo = openmeteo_requests.Client(session=retry_session)
 
 # -----------------------------
@@ -156,18 +156,6 @@ grid_cells = [
 logger.info(f"Total grid cells: {len(grid_cells)}")
 
 # -----------------------------
-# Helpers
-# -----------------------------
-def week_chunks(start, end):
-    current = start
-    while current <= end:
-        week_end = current + datetime.timedelta(days=6)
-        if week_end > end:
-            week_end = end
-        yield current, week_end
-        current = week_end + datetime.timedelta(days=1)
-
-# -----------------------------
 # Weather Parameters
 # -----------------------------
 url = "https://archive-api.open-meteo.com/v1/archive"
@@ -178,8 +166,7 @@ base_params = {
         "relative_humidity_2m_mean", "cloud_cover_mean",
         "soil_moisture_0_to_7cm_mean", "soil_temperature_0_to_7cm_mean",
         "sunshine_duration", "wind_speed_10m_max"
-    ],
-    "timezone": "Asia/Kolkata"
+    ]
 }
 
 # -----------------------------
@@ -189,65 +176,54 @@ all_weather_data = []
 
 for grid_lat, grid_lon, grid_id in grid_cells:
     logger.info(f"\nProcessing Grid: {grid_id} ({grid_lat}, {grid_lon})")
-    
-    grid_dataframes = []
-    
-    for chunk_start, chunk_end in week_chunks(start_date, end_date):
-        time.sleep(2)  # Delay to avoid rate-limiting
-        
-        params = base_params.copy()
-        params.update({
-            "latitude": grid_lat,
-            "longitude": grid_lon,
-            "start_date": chunk_start.isoformat(),
-            "end_date": chunk_end.isoformat()
-        })
-        
-        # Retry
-        for attempt in range(10):
-            try:
-                responses = openmeteo.weather_api(url, params=params, timeout=300)
-                response = responses[0]
-                break
-            except Exception as e:
-                logger.error(f"  __ Failed on attempt {attempt+1} for {chunk_start}–{chunk_end}: {str(e)}")
-                if hasattr(e, 'response') and e.response is not None:
-                    logger.error(f"  __ Response details: {e.response.status_code} - {e.response.text}")
-                time.sleep(5)
-        else:
-            logger.warning(f"  __ Skipping {chunk_start}–{chunk_end} after 10 failed attempts")
-            continue
-        
-        # Process daily data
-        daily = response.Daily()
-        daily_data = {
-            "date": pd.date_range(
-                start=pd.to_datetime(daily.Time(), unit="s", utc=True),
-                end=pd.to_datetime(daily.TimeEnd(), unit="s", utc=True),
-                freq=pd.Timedelta(seconds=daily.Interval()),
-                inclusive="left"
-            ),
-            "grid_id": grid_id,
-            "grid_lat": grid_lat,
-            "grid_lon": grid_lon,
-            "temperature_2m_mean": daily.Variables(0).ValuesAsNumpy(),
-            "temperature_2m_max": daily.Variables(1).ValuesAsNumpy(),
-            "temperature_2m_min": daily.Variables(2).ValuesAsNumpy(),
-            "precipitation_sum": daily.Variables(3).ValuesAsNumpy(),
-            "et0_fao_evapotranspiration_sum": daily.Variables(4).ValuesAsNumpy(),
-            "relative_humidity_2m_mean": daily.Variables(5).ValuesAsNumpy(),
-            "cloud_cover_mean": daily.Variables(6).ValuesAsNumpy(),
-            "soil_moisture_0_to_7cm_mean": daily.Variables(7).ValuesAsNumpy(),
-            "soil_temperature_0_to_7cm_mean": daily.Variables(8).ValuesAsNumpy(),
-            "sunshine_duration": daily.Variables(9).ValuesAsNumpy(),
-            "wind_speed_10m_max": daily.Variables(10).ValuesAsNumpy()
-        }
-        daily_dataframe = pd.DataFrame(data=daily_data)
-        grid_dataframes.append(daily_dataframe)
-    
-    if grid_dataframes:
-        grid_df = pd.concat(grid_dataframes, ignore_index=True)
-        all_weather_data.append(grid_df)
+
+    params = base_params.copy()
+    params.update({
+        "latitude": grid_lat,
+        "longitude": grid_lon,
+        "start_date": start_date.isoformat(),
+        "end_date": end_date.isoformat()
+    })
+
+    # Retry
+    for attempt in range(3):
+        try:
+            responses = openmeteo.weather_api(url, params=params, timeout=120)
+            response = responses[0]
+            break
+        except Exception as e:
+            logger.error(f"  __ Failed on attempt {attempt+1}: {e}")
+            time.sleep(5)
+    else:
+        logger.warning(f"  __ Skipping after 3 failed attempts")
+        continue
+
+    # Process daily data
+    daily = response.Daily()
+    daily_data = {
+        "date": pd.date_range(
+            start=pd.to_datetime(daily.Time(), unit="s", utc=True),
+            end=pd.to_datetime(daily.TimeEnd(), unit="s", utc=True),
+            freq=pd.Timedelta(seconds=daily.Interval()),
+            inclusive="left"
+        ),
+        "grid_id": grid_id,
+        "grid_lat": grid_lat,
+        "grid_lon": grid_lon,
+        "temperature_2m_mean": daily.Variables(0).ValuesAsNumpy(),
+        "temperature_2m_max": daily.Variables(1).ValuesAsNumpy(),
+        "temperature_2m_min": daily.Variables(2).ValuesAsNumpy(),
+        "precipitation_sum": daily.Variables(3).ValuesAsNumpy(),
+        "et0_fao_evapotranspiration_sum": daily.Variables(4).ValuesAsNumpy(),
+        "relative_humidity_2m_mean": daily.Variables(5).ValuesAsNumpy(),
+        "cloud_cover_mean": daily.Variables(6).ValuesAsNumpy(),
+        "soil_moisture_0_to_7cm_mean": daily.Variables(7).ValuesAsNumpy(),
+        "soil_temperature_0_to_7cm_mean": daily.Variables(8).ValuesAsNumpy(),
+        "sunshine_duration": daily.Variables(9).ValuesAsNumpy(),
+        "wind_speed_10m_max": daily.Variables(10).ValuesAsNumpy()
+    }
+    daily_dataframe = pd.DataFrame(data=daily_data)
+    all_weather_data.append(daily_dataframe)
 
 # -----------------------------
 # Save to DB
@@ -266,11 +242,6 @@ if all_weather_data:
     cols = ['dategrid_id'] + [col for col in final_weather_df.columns if col != 'dategrid_id']
     final_weather_df = final_weather_df[cols]
     logger.info(f"Weather DataFrame columns: {list(final_weather_df.columns)}")
-    
-    # Optional: Check for NaNs and log
-    nan_counts = final_weather_df.isnull().sum()
-    if nan_counts.any():
-        logger.warning(f"NaN values detected in DataFrame: {nan_counts[nan_counts > 0].to_dict()}")
     
     stmt = insert(weather_table).values(final_weather_df.to_dict('records'))
     upsert_stmt = stmt.on_conflict_do_nothing(index_elements=['dategrid_id'])
