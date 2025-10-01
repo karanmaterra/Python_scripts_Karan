@@ -1,0 +1,13 @@
+# Logs
+logs/*
+
+# Cache
+.cache/
+
+# Python
+__pycache__/
+*.pyc
+.env
+
+# Database credentials
+*.env
