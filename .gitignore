@@ -8,6 +8,7 @@ logs/*
 __pycache__/
 *.pyc
 .env
+.karan
 
 # Database credentials
 *.env
